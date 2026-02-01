@@ -52,13 +52,15 @@ Server runs at: `http://localhost:3000`
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new)
 
 1. Click "Deploy" button
-2. Add environment variable: `INTERVALS_ICU_API_KEY`
+2. Add environment variables:
+   - **INTERVALS_ICU_API_KEY** (required) – your Intervals.icu API key
+   - **MCP_API_KEY** (optional) – if set, only clients that send this key in headers can use the MCP
 3. Deploy
 4. Copy deployment URL
 
-## Configure Claude Code
+## Configure Cursor / MCP
 
-Add to your Claude Code MCP settings (`mcp.json`):
+Add to your MCP settings (`mcp.json`):
 
 ```json
 {
@@ -69,6 +71,23 @@ Add to your Claude Code MCP settings (`mcp.json`):
   }
 }
 ```
+
+If you set **MCP_API_KEY** in Vercel, clients must send it on every request. Add it under `headers`:
+
+```json
+{
+  "mcpServers": {
+    "intervals-icu": {
+      "url": "https://your-deployment.vercel.app/api/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Or use the custom header: `"X-MCP-API-Key": "YOUR_MCP_API_KEY"`.
 
 ## Available Tools
 
@@ -98,11 +117,8 @@ Add a workout to the athlete's workout library.
 
 ## Authentication
 
-Uses Basic Authentication with:
-- Username: `API_KEY`
-- Password: Your actual API key
-
-The authenticated user is referenced as athlete ID `"0"`.
+- **INTERVALS_ICU_API_KEY** – Set in Vercel (or `.env.local`). Used by the server to call the Intervals.icu API (Basic Auth, username `API_KEY`, password = key). Athlete ID `"0"` is the authenticated user.
+- **MCP_API_KEY** – Optional. If set in Vercel, only requests that send this value in `Authorization: Bearer <key>` or `X-MCP-API-Key: <key>` are allowed. Use this so only people who have the key can use your deployed MCP.
 
 ## API Documentation
 

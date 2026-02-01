@@ -18,6 +18,13 @@ function getConfig(): { apiKey: string; baseUrl: string } {
   };
 }
 
+/** If MCP_API_KEY is set in Vercel, client must send it (Authorization: Bearer <key> or X-MCP-API-Key). */
+function getMcpKeyFromRequest(request: Request): string | null {
+  const auth = request.headers.get('Authorization');
+  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
+  return request.headers.get('X-MCP-API-Key')?.trim() ?? null;
+}
+
 // ============================================================================
 // API Helper
 // ============================================================================
@@ -262,4 +269,32 @@ const handler = createMcpHandler(
   { basePath: '/api' }
 );
 
-export { handler as GET, handler as POST, handler as DELETE };
+async function requireMcpApiKey(
+  request: Request,
+  next: (req: Request) => Promise<Response>
+): Promise<Response> {
+  const expected = process.env.MCP_API_KEY;
+  if (!expected) return next(request);
+
+  const sent = getMcpKeyFromRequest(request);
+  if (!sent || sent !== expected) {
+    return new Response(
+      JSON.stringify({
+        error: 'Unauthorized',
+        hint: 'Set MCP_API_KEY in Vercel env and send it in mcp.json headers, e.g. "Authorization": "Bearer YOUR_MCP_API_KEY" or "X-MCP-API-Key": "YOUR_MCP_API_KEY"',
+      }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+  return next(request);
+}
+
+export async function GET(request: Request) {
+  return requireMcpApiKey(request, handler);
+}
+export async function POST(request: Request) {
+  return requireMcpApiKey(request, handler);
+}
+export async function DELETE(request: Request) {
+  return requireMcpApiKey(request, handler);
+}
