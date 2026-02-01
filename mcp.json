@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "intervals-icu": {
+      "url": "https://your-deployment.vercel.app/api/mcp"
+    }
+  }
+}
