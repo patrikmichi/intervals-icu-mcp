@@ -157,32 +157,65 @@ const handler = createMcpHandler(
 
     server.tool(
       'fetch_activities_list',
-      'Retrieve activities as JSON list for a date range. Use oldest and newest in yyyy-MM-dd format.',
+      'Retrieve completed activities as JSON list for a date range. Returns summary (id, name, type, date, distance, duration). Optional type filter: e.g. "Run", "Ride", "Swim". Use get_activity(activity_id) for full post-workout data (heart rate, pace, power, intervals).',
       {
         athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
         oldest: z.string().describe('Start date in yyyy-MM-dd format'),
         newest: z.string().describe('End date in yyyy-MM-dd format'),
+        type: z.string().optional().describe('Filter by activity type (e.g. "Run", "Ride", "Swim", "VirtualRide")'),
       },
-      async ({ athlete_id, oldest, newest }) => {
+      async ({ athlete_id, oldest, newest, type }) => {
         const id = athlete_id || '0';
-        const activities = await intervalsApi(`/athlete/${id}/activities`, {
-          params: { oldest, newest },
-        });
+        const params: Record<string, string> = { oldest, newest };
+        if (type) params.type = type;
+        let activities = await intervalsApi<Array<{ type?: string }>>(`/athlete/${id}/activities`, { params });
+        if (type && Array.isArray(activities)) {
+          activities = activities.filter((a) => (a.type ?? '').toLowerCase() === type.toLowerCase());
+        }
         return { content: [json(activities)] };
       }
     );
 
     server.tool(
       'get_activity',
-      'Get detailed activity data including intervals and metrics.',
+      'Get full activity data for a completed workout: heart rate (avg/max), pace/speed, power, distance, duration. With include_intervals=true (default) also returns per-interval breakdown (HR, pace, power per segment). Use after a workout is synced/uploaded.',
       {
-        activity_id: z.string().describe('The activity ID'),
-        include_intervals: z.boolean().optional().describe('Include interval data (default: true)'),
+        activity_id: z.string().describe('The activity ID (from fetch_activities_list or event.paired_activity_id)'),
+        include_intervals: z.boolean().optional().describe('Include per-interval data (default: true)'),
       },
       async ({ activity_id, include_intervals = true }) => {
         const params = include_intervals ? { intervals: 'true' } : {};
         const activity = await intervalsApi(`/activity/${activity_id}`, { params });
         return { content: [json(activity)] };
+      }
+    );
+
+    server.tool(
+      'fetch_activities_with_details',
+      'Fetch completed activities for a date range with full post-workout data: heart rate, pace, power, intervals. Optional type filter (e.g. Run, Ride). Returns list of activities each with full metrics. Limited to 20 activities per call.',
+      {
+        athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
+        oldest: z.string().describe('Start date in yyyy-MM-dd format'),
+        newest: z.string().describe('End date in yyyy-MM-dd format'),
+        type: z.string().optional().describe('Filter by activity type (e.g. "Run", "Ride", "Swim")'),
+        include_intervals: z.boolean().optional().describe('Include per-interval breakdown in each activity (default: true)'),
+      },
+      async ({ athlete_id, oldest, newest, type, include_intervals = true }) => {
+        const id = athlete_id || '0';
+        const listParams: Record<string, string> = { oldest, newest };
+        if (type) listParams.type = type;
+        let list = await intervalsApi<Array<{ id?: string; type?: string }>>(`/athlete/${id}/activities`, { params: listParams });
+        if (type && Array.isArray(list)) {
+          list = list.filter((a) => (a.type ?? '').toLowerCase() === type.toLowerCase());
+        }
+        const ids = (Array.isArray(list) ? list : []).slice(0, 20).map((a) => a.id ?? a).filter(Boolean);
+        const params = include_intervals ? { intervals: 'true' } : {};
+        const activities = await Promise.all(
+          ids.map((activityId) =>
+            intervalsApi(`/activity/${activityId}`, { params })
+          )
+        );
+        return { content: [json(activities)] };
       }
     );
 
@@ -256,20 +289,50 @@ const handler = createMcpHandler(
     );
 
     server.tool(
+      'get_event_completed_activity',
+      'Get the completed-activity data (heart rate, pace, power) for a planned event, if it was done and synced. Returns event + full activity when event has paired_activity_id.',
+      {
+        athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
+        event_id: z.string().describe('The event ID (planned workout)'),
+        include_intervals: z.boolean().optional().describe('Include per-interval breakdown in activity (default: true)'),
+      },
+      async ({ athlete_id, event_id, include_intervals = true }) => {
+        const id = athlete_id || '0';
+        const event = await intervalsApi<{ paired_activity_id?: string | null }>(`/athlete/${id}/events/${event_id}`);
+        const activityId = event?.paired_activity_id;
+        if (!activityId) {
+          return { content: [json({ event, activity: null, message: 'No completed activity linked to this event' })] };
+        }
+        const params = include_intervals ? { intervals: 'true' } : {};
+        const activity = await intervalsApi(`/activity/${activityId}`, { params });
+        return { content: [json({ event, activity })] };
+      }
+    );
+
+    server.tool(
       'create_event',
-      'Create a planned workout or calendar event.',
+      'Create a planned workout or calendar event (cycling, running, etc.) with optional workout_doc.steps for structured workouts.',
       {
         athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
         start_date_local: z.string().describe('Event start date in yyyy-MM-dd or yyyy-MM-ddTHH:mm:ss format (API requires T00:00:00)'),
-        type: z.string().optional().describe('Event type (e.g., "Ride", "Run", "Swim")'),
+        type: z.string().optional().describe('Event type: "Ride" (power), "Run" (pace), "Swim", etc.'),
         category: z.string().optional().describe('Event category (e.g., "WORKOUT", "Race", "Note")'),
         name: z.string().optional().describe('Event name/title'),
         description: z.string().optional().describe('Event description or workout details'),
-        workout_id: z.string().optional().describe('Workout ID from library to use as template'),
-        duration: z.number().optional().describe('Planned duration in seconds (sent as moving_time to API)'),
+        workout_id: z.string().optional().describe('Workout ID from library to use as template (alternative to workout_doc)'),
+        duration: z.number().optional().describe('Planned duration in seconds (sent as moving_time; can be omitted if workout_doc.steps are provided)'),
         distance: z.number().optional().describe('Planned distance in meters'),
+        indoor: z.boolean().optional().describe('Indoor workout (e.g. trainer)'),
+        calendar_id: z.number().optional().describe('Calendar ID to add the event to'),
+        workout_doc: z.record(z.unknown()).optional().describe(
+          'Workout structure. Object with "steps": [ ... ]. ' +
+          'Cycling (type Ride): each step has "text", "power": { "start", "end", "units": "%ftp", "target": "1s" }, "duration" (seconds). ' +
+          'Running (type Run): each step has "text", "pace": { "start", "end", "units": "%pace" }, "distance" (meters) and/or "duration" (seconds). ' +
+          'For intervals use "reps" + nested "steps": { "reps": 4, "text": "4x", "steps": [ { "text": "Threshold", "pace": {...}, "distance": 1500 }, { "text": "Easy jog", "duration": 120 } ] }. ' +
+          'See event-structure-full.json (Ride) and run workout structure (pace, distance, reps).'
+        ),
       },
-      async ({ athlete_id, start_date_local, type, category, name, description, workout_id, duration, distance }) => {
+      async ({ athlete_id, start_date_local, type, category, name, description, workout_id, duration, distance, indoor, calendar_id, workout_doc }) => {
         const id = athlete_id || '0';
         // API requires start_date_local with time, e.g. 2020-05-01T00:00:00
         const normalizedDate =
@@ -282,9 +345,12 @@ const handler = createMcpHandler(
         if (name) payload.name = name;
         if (description) payload.description = description;
         if (workout_id) payload.workout_id = workout_id;
+        if (indoor != null) payload.indoor = indoor;
+        if (calendar_id != null) payload.calendar_id = calendar_id;
         // API expects moving_time (seconds), not duration
         if (duration != null) payload.moving_time = duration;
-        if (distance) payload.distance = distance;
+        if (distance != null) payload.distance = distance;
+        if (workout_doc != null && typeof workout_doc === 'object') payload.workout_doc = workout_doc;
 
         const event = await intervalsApi(`/athlete/${id}/events`, {
           method: 'POST',
@@ -566,6 +632,87 @@ const handler = createMcpHandler(
           body: JSON.stringify(payload),
         });
         return { content: [json(wellness)] };
+      }
+    );
+
+    // ========================================================================
+    // Analysis & planning (combined views for full training analysis and planning)
+    // ========================================================================
+
+    server.tool(
+      'fetch_training_overview',
+      'Complete training analysis for a date range: wellness (load, resting HR, sleep, etc.), completed activities with full data (HR, pace, power, intervals), and planned events. Use for analyzing training load, consistency, and how workouts went.',
+      {
+        athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
+        oldest: z.string().describe('Start date in yyyy-MM-dd format'),
+        newest: z.string().describe('End date in yyyy-MM-dd format'),
+        include_activity_intervals: z.boolean().optional().describe('Include per-interval breakdown in each activity (default: true)'),
+        max_activities: z.number().optional().describe('Max activities to fetch with full details (default: 15)'),
+      },
+      async ({ athlete_id, oldest, newest, include_activity_intervals = true, max_activities = 15 }) => {
+        const id = athlete_id || '0';
+        const [wellnessRes, eventsRes, listRes] = await Promise.all([
+          intervalsApi(`/athlete/${id}/wellness`, { params: { oldest, newest } }).catch(() => null),
+          intervalsApi(`/athlete/${id}/events`, { params: { oldest, newest } }),
+          intervalsApi<Array<{ id?: string }>>(`/athlete/${id}/activities`, { params: { oldest, newest } }),
+        ]);
+        const ids = (Array.isArray(listRes) ? listRes : []).slice(0, Math.min(max_activities, 20)).map((a) => a.id ?? a).filter(Boolean);
+        const params = include_activity_intervals ? { intervals: 'true' } : {};
+        const activities = ids.length > 0
+          ? await Promise.all(ids.map((activityId) => intervalsApi(`/activity/${activityId}`, { params })))
+          : [];
+        return {
+          content: [json({
+            date_range: { oldest, newest },
+            wellness: wellnessRes,
+            planned_events: eventsRes,
+            completed_activities: activities,
+            summary: {
+              planned_count: Array.isArray(eventsRes) ? eventsRes.length : 0,
+              completed_count: activities.length,
+            },
+          })],
+        };
+      }
+    );
+
+    server.tool(
+      'fetch_planning_context',
+      'Context for planning new workouts: upcoming planned events, workout library (templates), and recent wellness (load/resting HR). Use before creating events to see what is already planned and current load.',
+      {
+        athlete_id: z.string().optional().describe('Athlete ID. Use "0" for authenticated user (default)'),
+        from_date: z.string().describe('Start of planning window in yyyy-MM-dd (e.g. today or start of week)'),
+        span_days: z.number().optional().describe('Days to look ahead for planned events (default: 14)'),
+        wellness_days_back: z.number().optional().describe('Days of wellness to include for recent load (default: 7)'),
+      },
+      async ({ athlete_id, from_date, span_days = 14, wellness_days_back = 7 }) => {
+        const id = athlete_id || '0';
+        const from = new Date(from_date + 'T00:00:00');
+        const to = new Date(from);
+        to.setDate(to.getDate() + span_days);
+        const oldestEvent = from_date;
+        const newestEvent = to.toISOString().slice(0, 10);
+        const wellnessEnd = from_date;
+        const wellnessStart = new Date(from);
+        wellnessStart.setDate(wellnessStart.getDate() - wellness_days_back);
+        const oldestWellness = wellnessStart.toISOString().slice(0, 10);
+        const [events, workouts, wellness] = await Promise.all([
+          intervalsApi(`/athlete/${id}/events`, { params: { oldest: oldestEvent, newest: newestEvent } }),
+          intervalsApi(`/athlete/${id}/workouts`),
+          intervalsApi(`/athlete/${id}/wellness`, { params: { oldest: oldestWellness, newest: wellnessEnd } }).catch(() => null),
+        ]);
+        return {
+          content: [json({
+            planning_window: { from: oldestEvent, to: newestEvent, span_days },
+            upcoming_events: events,
+            workout_library: workouts,
+            recent_wellness: wellness,
+            summary: {
+              planned_events_count: Array.isArray(events) ? events.length : 0,
+              library_workouts_count: Array.isArray(workouts) ? workouts.length : 0,
+            },
+          })],
+        };
       }
     );
 

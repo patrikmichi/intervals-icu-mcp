@@ -1,0 +1,58 @@
+{
+  "start_date_local": "2026-02-02T00:00:00",
+  "type": "Run",
+  "category": "WORKOUT",
+  "name": "P: Threshold intervals [4x1.5km]",
+  "description": "- Warm up 2km 65-75% Pace\n\n4x\n- Threshold 1.5km 93-96% Pace\n- Easy jog 2m 65-70% Pace\n\n- Cool Down 2km 65-70% Pace\n",
+  "moving_time": 3585,
+  "indoor": false,
+  "workout_doc": {
+    "steps": [
+      {
+        "text": "Warm up",
+        "pace": {
+          "start": 65,
+          "end": 75,
+          "units": "%pace"
+        },
+        "distance": 2000,
+        "duration": 729
+      },
+      {
+        "reps": 4,
+        "text": "4x",
+        "steps": [
+          {
+            "text": "Threshold",
+            "pace": {
+              "start": 93,
+              "end": 96,
+              "units": "%pace"
+            },
+            "distance": 1500,
+            "duration": 405
+          },
+          {
+            "text": "Easy jog",
+            "pace": {
+              "start": 65,
+              "end": 70,
+              "units": "%pace"
+            },
+            "duration": 120
+          }
+        ]
+      },
+      {
+        "text": "Cool Down",
+        "pace": {
+          "start": 65,
+          "end": 70,
+          "units": "%pace"
+        },
+        "distance": 2000,
+        "duration": 756
+      }
+    ]
+  }
+}
